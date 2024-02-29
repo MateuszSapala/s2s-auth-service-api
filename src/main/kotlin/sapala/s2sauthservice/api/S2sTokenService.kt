@@ -2,6 +2,8 @@ package sapala.s2sauthservice.api
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
+import io.jsonwebtoken.Claims
+import io.jsonwebtoken.Jws
 import io.jsonwebtoken.Jwts
 import io.jsonwebtoken.io.Decoders
 import org.slf4j.Logger
@@ -23,7 +25,7 @@ class S2sTokenService(private val s2sClient: S2sClient, private val mapper: Obje
         val log: Logger = LoggerFactory.getLogger(S2sTokenService::class.java)
     }
 
-    private var s2sToken: String? = null
+    var s2sToken: String? = null
     private var latch: CountDownLatch? = null
     private var publicKeys: Map<String, java.security.PublicKey>? = null
     private var publicKeysLastRefresh: Long = 0
@@ -65,7 +67,13 @@ class S2sTokenService(private val s2sClient: S2sClient, private val mapper: Obje
         return keyFactory.generatePublic(x509EncodedKeySpec)
     }
 
-    internal fun receiveToken(s2sToken: String, authToken: String) {
+    internal fun receiveToken(s2sToken: String) {
+        log.info("S2S token received")
+        this.s2sToken = s2sToken
+        latch?.countDown()
+    }
+
+    fun validateAuthToken(authToken: String, allowedServices: Array<out String>? = null): Jws<Claims> {
         val keyId = authToken.jwtsKeyId()
         if (publicKeys == null || (!publicKeys!!.containsKey(keyId) && publicKeysLastRefresh < authToken.jwtsIssuedAt())) {
             refreshPublicKeys()
@@ -77,12 +85,13 @@ class S2sTokenService(private val s2sClient: S2sClient, private val mapper: Obje
             .verifyWith(publicKeys!![keyId])
             .build()
             .parseSignedClaims(authToken)
-        if (jws.payload["serviceName"] != "s2s-auth-service") {
+        if (allowedServices == null) {
+            return jws
+        }
+        if (!allowedServices.contains(jws.payload["serviceName"])) {
             throw ForbiddenException()
         }
-        log.info("S2S token received")
-        this.s2sToken = s2sToken
-        latch?.countDown()
+        return jws
     }
 
     private fun String.decode() = String(Decoders.BASE64.decode(this))
