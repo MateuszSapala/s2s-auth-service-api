@@ -14,6 +14,7 @@ import sapala.s2sauthservice.api.entity.PublicKey
 import sapala.s2sauthservice.api.exceptions.ForbiddenException
 import sapala.s2sauthservice.api.exceptions.UnauthorizedException
 import java.security.spec.X509EncodedKeySpec
+import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -21,25 +22,57 @@ import java.util.concurrent.TimeUnit
 
 @Service
 class S2sTokenService(private val s2sClient: S2sClient, private val mapper: ObjectMapper) {
+    private val executor = Executors.newSingleThreadScheduledExecutor()
+
     companion object {
         val log: Logger = LoggerFactory.getLogger(S2sTokenService::class.java)
+        const val TOKEN_REFRESH_THRESHOLD = 2L
     }
 
     var s2sToken: String? = null
+    var tokenValidUntil: Instant? = null
     private var latch: CountDownLatch? = null
     private var publicKeys: Map<String, java.security.PublicKey>? = null
     private var publicKeysLastRefresh: Long = 0
     private var publicKeysLatch: CountDownLatch? = null
 
     init {
-        Executors.newSingleThreadScheduledExecutor()
-            .scheduleAtFixedRate({ refreshPublicKeys() }, 0, 1, TimeUnit.HOURS)
+        executor.scheduleAtFixedRate({ refreshPublicKeys() }, 0, 1, TimeUnit.HOURS)
     }
 
     fun requestToken() {
-        latch = CountDownLatch(1)
-        s2sClient.requestToken()
-        latch!!.await(30, TimeUnit.SECONDS)
+        try {
+            latch = CountDownLatch(1)
+            s2sClient.requestToken()
+            latch!!.await(30, TimeUnit.SECONDS)
+            scheduleTokenRefreshing(false)
+        } catch (ex: Exception) {
+            log.warn("Failed to receive s2s token")
+            if (s2sToken == null) {
+                throw ex
+            }
+            scheduleTokenRefreshing(true)
+        }
+
+    }
+
+    private fun scheduleTokenRefreshing(requestingTokenFailed: Boolean) {
+        if (requestingTokenFailed) {
+            val remainingTokenLifespan = Duration.between(Instant.now(), tokenValidUntil)
+            if (remainingTokenLifespan.toMinutes() < TOKEN_REFRESH_THRESHOLD) {
+                return scheduleTokenRefresh(5)
+            }
+            return scheduleTokenRefresh(60)
+        }
+        val delayInSeconds = Duration.between(Instant.now(), tokenValidUntil)
+            .dividedBy(TOKEN_REFRESH_THRESHOLD)
+            .toSeconds()
+        scheduleTokenRefresh(delayInSeconds)
+    }
+
+    private fun scheduleTokenRefresh(delayInSeconds: Long) {
+        log.info("Next S2S token refresh will happen at {}", Instant.now().plusSeconds(delayInSeconds))
+        executor.schedule({ requestToken() }, delayInSeconds, TimeUnit.SECONDS)
     }
 
     private fun refreshPublicKeys() {
@@ -69,6 +102,7 @@ class S2sTokenService(private val s2sClient: S2sClient, private val mapper: Obje
 
     internal fun receiveToken(s2sToken: String) {
         log.info("S2S token received")
+        this.tokenValidUntil = validateAuthToken(s2sToken).payload.expiration.toInstant()
         this.s2sToken = s2sToken
         latch?.countDown()
     }

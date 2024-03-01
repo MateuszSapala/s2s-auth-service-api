@@ -53,7 +53,7 @@ class S2sClient(
             log.warn("Unable to request token. Response {}: {}", response.code, response.body?.string())
             return false
         }
-        log.info("Successfully requested token to")
+        log.info("Successfully requested token")
         return true
     }
 }
