@@ -122,7 +122,7 @@ class S2sTokenService(private val s2sClient: S2sClient, private val mapper: Obje
         if (allowedServices == null) {
             return jws
         }
-        if (!allowedServices.contains(jws.payload["serviceName"])) {
+        if (!allowedServices.contains(jws.payload.subject)) {
             throw ForbiddenException()
         }
         return jws
